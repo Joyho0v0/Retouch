@@ -1,0 +1,19 @@
+colorama @ file:///home/conda/feedstock_root/build_artifacts/colorama_1733218098505/work
+filelock==3.19.1
+fsspec==2025.10.0
+Jinja2==3.1.6
+joblib @ file:///home/conda/feedstock_root/build_artifacts/joblib_1748019130050/work
+MarkupSafe==2.1.5
+mpmath==1.3.0
+networkx==3.2.1
+numpy @ file:///D:/bld/numpy_1732314314278/work/dist/numpy-2.0.2-cp39-cp39-win_amd64.whl#sha256=8824ea87142626db7bbf79bdbcbd5b3a2fd77d7570bd62b4f705100e42b651e1
+pillow==11.3.0
+scikit-learn @ file:///D:/bld/scikit-learn_1736496793625/work/dist/scikit_learn-1.6.1-cp39-cp39-win_amd64.whl#sha256=bb1e08460161bd7b8163df245d711be5c4d65ff892d330db2e71295806b53f85
+scipy @ file:///C:/bld/scipy-split_1716470385682/work/dist/scipy-1.13.1-cp39-cp39-win_amd64.whl#sha256=490e922ef930c40e74290d95915a98295b9059d02849059317bab82ba7810581
+sympy==1.14.0
+threadpoolctl @ file:///home/conda/feedstock_root/build_artifacts/threadpoolctl_1741878222898/work
+torch==2.8.0+cu128
+torchaudio==2.8.0+cu128
+torchvision==0.23.0+cu128
+tqdm @ file:///home/conda/feedstock_root/build_artifacts/tqdm_1735661334605/work
+typing_extensions==4.15.0

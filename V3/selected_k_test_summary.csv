@@ -1,0 +1,5 @@
+k,test_acc,model_path
+32,0.8838709677419355,./result/model_selected_32.pth
+64,0.896774193548387,./result/model_selected_64.pth
+128,0.9096774193548387,./result/model_selected_128.pth
+256,0.8709677419354839,./result/model_selected_256.pth

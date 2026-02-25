@@ -1,0 +1,5 @@
+k,best_val_acc,epochs_ran,save_path
+32,0.9224393132030787,41,./result/model_selected_32.pth
+64,0.9179988158673772,40,./result/model_selected_64.pth
+128,0.9177027827116637,40,./result/model_selected_128.pth
+256,0.9177027827116637,40,./result/model_selected_256.pth
