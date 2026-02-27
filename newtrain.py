@@ -68,6 +68,31 @@ class EfficientNetB0SelectedChannels(nn.Module):
 		self.dropout = nn.Dropout(dropout)
 		self.fc = nn.Linear(int(idx.numel()), num_classes)
 
+	def load_pretrained_backbone(self, pretrained_path, device="cpu"):
+		"""从 OriginalModel.pth 加载预训练的 backbone 权重。
+
+		这一步非常关键：通道选择是基于预训练特征做的，
+		所以训练时 backbone 也必须从预训练权重开始，而不是随机初始化。
+		"""
+		if not os.path.exists(pretrained_path):
+			print(f"[Warning] 预训练模型不存在: {pretrained_path}，使用随机初始化")
+			return
+		state_dict = torch.load(pretrained_path, map_location=device)
+		self.backbone.load_state_dict(state_dict)
+		print(f"已加载预训练 backbone 权重: {pretrained_path}")
+
+	def freeze_backbone(self):
+		"""冻结 backbone 参数，只训练 FC head。"""
+		for param in self.backbone.parameters():
+			param.requires_grad = False
+		print("Backbone 已冻结")
+
+	def unfreeze_backbone(self):
+		"""解冻 backbone 参数，允许微调。"""
+		for param in self.backbone.parameters():
+			param.requires_grad = True
+		print("Backbone 已解冻")
+
 	def forward(self, x):
 		features = self.backbone.forward_features(x, pool=True, flatten=True)
 		features = features.index_select(dim=1, index=self.selected_indices)
@@ -134,7 +159,9 @@ def main():
 	val_dir = os.path.join(base_dir, "val")
 
 	selector_path = "./nmi_channel_selector.pkl"
-	# 你之前的选择是“2/2”：默认用 128，并且希望依次跑多个 k
+	pretrained_path = "./results/OriginalModel.pth"  # 预训练模型权重
+
+	# 是否依次跑多个 k
 	RUN_MULTI_K = True
 	K_LIST = [32, 64, 128, 256]
 	selected_k = 128  # RUN_MULTI_K=False 时使用
@@ -142,9 +169,12 @@ def main():
 
 	batch_size = 16
 	num_workers = 2
-	lr = 1e-4
+	backbone_lr = 1e-5      # backbone 用小学习率（微调）
+	fc_lr = 1e-3            # FC head 用大学习率（新层需要快速学习）
+	weight_decay = 1e-4     # L2 正则化，防止过拟合
 	epochs = 100
-	patience = 10
+	patience = 5
+	freeze_backbone_epochs = 5  # 前 N 个 epoch 冻结 backbone，只训练 FC head
 
 	save_dir = "./result"
 	os.makedirs(save_dir, exist_ok=True)
@@ -183,6 +213,8 @@ def main():
 	print("开始训练...")
 	print(f"device: {device}")
 	print(f"k_list: {k_list}")
+	print(f"backbone_lr: {backbone_lr}, fc_lr: {fc_lr}, weight_decay: {weight_decay}")
+	print(f"freeze_backbone_epochs: {freeze_backbone_epochs}")
 
 	with open(summary_csv, "w", newline="") as f:
 		writer = csv.DictWriter(
@@ -195,41 +227,116 @@ def main():
 			save_path = os.path.join(save_dir, f"model_selected_{k}.pth")
 			selected_indices = all_indices[:k]
 
+			# 每个 k 的逐 epoch 日志
+			epoch_csv = os.path.join(save_dir, f"epoch_log_k{k}.csv")
+
 			print("=" * 60)
 			print(f"[{idx_k}/{len(k_list)}] 训练 k={k}")
 			print(f"save_path: {save_path}")
 
-			model = EfficientNetB0SelectedChannels(num_classes=num_classes, selected_indices=selected_indices)
+			# ---------- 创建模型并加载预训练权重 ----------
+			model = EfficientNetB0SelectedChannels(
+				num_classes=num_classes, selected_indices=selected_indices
+			)
+			model.load_pretrained_backbone(pretrained_path, device=device)
 			model = model.to(device)
-			optimizer = optim.Adam(model.parameters(), lr=lr)
+
+			# ---------- Phase 1: 冻结 backbone，只训练 FC head ----------
+			if freeze_backbone_epochs > 0:
+				model.freeze_backbone()
+				optimizer_phase1 = optim.Adam(
+					model.fc.parameters(),
+					lr=fc_lr,
+					weight_decay=weight_decay,
+				)
+
+			# ---------- Phase 2: 解冻 backbone，差异化学习率微调 ----------
+			# 把 backbone 参数和 FC 参数分成两组
+			backbone_params = list(model.backbone.parameters())
+			fc_params = list(model.fc.parameters())
+
+			optimizer_phase2 = optim.Adam(
+				[
+					{"params": backbone_params, "lr": backbone_lr},
+					{"params": fc_params, "lr": fc_lr},
+				],
+				weight_decay=weight_decay,
+			)
+
+			# 学习率调度器：验证准确率不提升时自动降低学习率
+			scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+				optimizer_phase2, mode="max", factor=0.5, patience=5
+			)
 
 			best_acc = 0.0
 			no_improve_epochs = 0
 			epochs_ran = 0
 
-			for epoch in range(1, epochs + 1):
-				epochs_ran = epoch
-				train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-				val_loss, val_acc = evaluate(model, val_loader, criterion, device)
+			with open(epoch_csv, "w", newline="") as ef:
+				epoch_writer = csv.DictWriter(
+					ef,
+					fieldnames=["epoch", "phase", "train_loss", "train_acc", "val_loss", "val_acc", "best_acc"],
+				)
+				epoch_writer.writeheader()
 
-				is_best = val_acc > best_acc
-				if is_best:
-					best_acc = val_acc
-					torch.save(model.state_dict(), save_path)
-					no_improve_epochs = 0
-				else:
-					no_improve_epochs += 1
+				for epoch in range(1, epochs + 1):
+					epochs_ran = epoch
 
-				print("Epoch {}/{}".format(epoch, epochs))
-				print("Train Loss: {:.4f}, Train Acc: {:.4f}".format(train_loss, train_acc))
-				print("Val   Loss: {:.4f}, Val   Acc: {:.4f}".format(val_loss, val_acc))
-				print("Best  Acc : {:.4f}".format(best_acc))
-				print("No improve epochs: {} / {}".format(no_improve_epochs, patience))
-				print("-" * 50)
+					# 判断当前阶段
+					if epoch <= freeze_backbone_epochs:
+						phase = "freeze"
+						current_optimizer = optimizer_phase1
+					else:
+						# 在第一个 phase2 epoch 开始时解冻 backbone
+						if epoch == freeze_backbone_epochs + 1:
+							model.unfreeze_backbone()
+						phase = "finetune"
+						current_optimizer = optimizer_phase2
 
-				if no_improve_epochs >= patience:
-					print("Validation accuracy did not improve. Early stopping.")
-					break
+					train_loss, train_acc = train_one_epoch(
+						model, train_loader, criterion, current_optimizer, device
+					)
+					val_loss, val_acc = evaluate(
+						model, val_loader, criterion, device
+					)
+
+					# Phase 2 才用学习率调度器
+					if phase == "finetune":
+						scheduler.step(val_acc)
+
+					is_best = val_acc > best_acc
+					if is_best:
+						best_acc = val_acc
+						torch.save(model.state_dict(), save_path)
+						no_improve_epochs = 0
+					else:
+						# 只在 phase2 (finetune) 才计算 early stopping
+						if phase == "finetune":
+							no_improve_epochs += 1
+
+					# 记录到逐 epoch CSV
+					epoch_writer.writerow({
+						"epoch": epoch,
+						"phase": phase,
+						"train_loss": round(train_loss, 6),
+						"train_acc": round(train_acc, 6),
+						"val_loss": round(val_loss, 6),
+						"val_acc": round(val_acc, 6),
+						"best_acc": round(best_acc, 6),
+					})
+					ef.flush()
+
+					print("Epoch {}/{} [{}]".format(epoch, epochs, phase))
+					print("Train Loss: {:.4f}, Train Acc: {:.4f}".format(train_loss, train_acc))
+					print("Val   Loss: {:.4f}, Val   Acc: {:.4f}".format(val_loss, val_acc))
+					print("Best  Acc : {:.4f}".format(best_acc))
+					if phase == "finetune":
+						print("No improve epochs: {} / {}".format(no_improve_epochs, patience))
+					print("-" * 50)
+
+					if phase == "finetune" and no_improve_epochs >= patience:
+						print("Validation accuracy did not improve. Early stopping.")
+						break
 
 			writer.writerow(
 				{
