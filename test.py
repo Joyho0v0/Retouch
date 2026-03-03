@@ -5,6 +5,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from EfficientNet_B0 import EfficientNetB0
+from train_assumpt import EfficientNetB0SelectedChannels
 
 
 def get_transform():
@@ -15,14 +16,6 @@ def get_transform():
 		transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 	])
 	return test_transform
-
-
-def build_model(num_classes):
-	# model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
-	# in_features = model.classifier[1].in_features
-	# model.classifier[1] = nn.Linear(in_features, num_classes)
-	# return model
-	return EfficientNetB0(num_classes)
 
 
 def evaluate(model, loader, device):
@@ -50,17 +43,21 @@ def main():
 	test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2)
 
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	model = build_model(num_classes=2)
-	model = model.to(device)
 
-	model_path = "./results/OriginalModel.pth"
-	if os.path.exists(model_path):
-		state_dict = torch.load(model_path, map_location=device, weights_only=True)
-		model.load_state_dict(state_dict)
-	else:
+	model_path = "./result_assumpt/model_final_k32.pth"
+	if not os.path.exists(model_path):
 		print("Model not found:")
 		print(model_path)
 		return
+
+	# 先加载 state_dict，从中读取 selected_indices 来构建模型
+	state_dict = torch.load(model_path, map_location=device, weights_only=True)
+	selected_indices = state_dict["selected_indices"].tolist()
+	model = EfficientNetB0SelectedChannels(
+		num_classes=2, selected_indices=selected_indices, dropout=0.0,
+	)
+	model.load_state_dict(state_dict)
+	model = model.to(device)
 
 	acc = evaluate(model, test_loader, device)
 	print("Test Accuracy: {:.4f}".format(acc))

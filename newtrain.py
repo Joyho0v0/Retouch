@@ -11,7 +11,7 @@ from tqdm import tqdm
 from torchvision import datasets
 
 from EfficientNet_B0 import EfficientNetB0
-from train import get_transforms
+from torchvision import transforms
 
 
 def set_seed(seed):
@@ -60,7 +60,7 @@ class EfficientNetB0SelectedChannels(nn.Module):
 	- 最后用线性层分类
 	"""
 
-	def __init__(self, num_classes, selected_indices, dropout=0.2):
+	def __init__(self, num_classes, selected_indices, dropout=0.3):
 		super().__init__()
 		self.backbone = EfficientNetB0(num_classes=num_classes)
 		idx = torch.tensor(selected_indices, dtype=torch.long)
@@ -169,11 +169,13 @@ def main():
 
 	batch_size = 16
 	num_workers = 2
-	backbone_lr = 1e-5      # backbone 用小学习率（微调）
+	backbone_lr = 1e-6      # backbone 用很小的学习率（温和微调，避免破坏预训练特征）
 	fc_lr = 1e-3            # FC head 用大学习率（新层需要快速学习）
 	weight_decay = 1e-4     # L2 正则化，防止过拟合
+	label_smoothing = 0.1   # 标签平滑，防止模型对源域过度自信
 	epochs = 100
-	patience = 5
+	patience_phase1 = 10    # Phase 1 的 patience（冻结阶段）
+	patience_phase2 = 15    # Phase 2 的 patience（微调阶段，需要更多耐心）
 	freeze_backbone_epochs = 5  # 前 N 个 epoch 冻结 backbone，只训练 FC head
 
 	save_dir = "./result"
@@ -198,8 +200,27 @@ def main():
 			f"最大 k={max_k} 超过选择器通道数={len(all_indices)}，请调小 K_LIST"
 		)
 
-	# ========== 数据 ==========
-	train_transform, val_transform = get_transforms()
+	# ========== 数据增强 ==========
+	# 训练增强：比原来的 train.py 更强，增加跨域泛化能力
+	train_transform = transforms.Compose([
+		transforms.Resize(256),
+		transforms.CenterCrop(224),
+		transforms.RandomHorizontalFlip(p=0.5),
+		transforms.RandomRotation(15),
+		transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+		transforms.RandomGrayscale(p=0.1),
+		transforms.ToTensor(),
+		transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+		transforms.RandomErasing(p=0.2, scale=(0.02, 0.2)),
+	])
+
+	val_transform = transforms.Compose([
+		transforms.Resize(256),
+		transforms.CenterCrop(224),
+		transforms.ToTensor(),
+		transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+	])
+
 	train_dataset = datasets.ImageFolder(train_dir, transform=train_transform)
 	val_dataset = datasets.ImageFolder(val_dir, transform=val_transform)
 
@@ -208,13 +229,15 @@ def main():
 
 	# ========== 设备 / 损失 ==========
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	criterion = nn.CrossEntropyLoss()
+	criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
 	print("开始训练...")
 	print(f"device: {device}")
 	print(f"k_list: {k_list}")
 	print(f"backbone_lr: {backbone_lr}, fc_lr: {fc_lr}, weight_decay: {weight_decay}")
+	print(f"label_smoothing: {label_smoothing}")
 	print(f"freeze_backbone_epochs: {freeze_backbone_epochs}")
+	print(f"patience: phase1={patience_phase1}, phase2={patience_phase2}")
 
 	with open(summary_csv, "w", newline="") as f:
 		writer = csv.DictWriter(
@@ -230,13 +253,19 @@ def main():
 			# 每个 k 的逐 epoch 日志
 			epoch_csv = os.path.join(save_dir, f"epoch_log_k{k}.csv")
 
+			# k 较小时用更高的 dropout，加强正则化
+			if k <= 64:
+				dropout = 0.4
+			else:
+				dropout = 0.3
+
 			print("=" * 60)
-			print(f"[{idx_k}/{len(k_list)}] 训练 k={k}")
+			print(f"[{idx_k}/{len(k_list)}] 训练 k={k}, dropout={dropout}")
 			print(f"save_path: {save_path}")
 
 			# ---------- 创建模型并加载预训练权重 ----------
 			model = EfficientNetB0SelectedChannels(
-				num_classes=num_classes, selected_indices=selected_indices
+				num_classes=num_classes, selected_indices=selected_indices, dropout=dropout
 			)
 			model.load_pretrained_backbone(pretrained_path, device=device)
 			model = model.to(device)
@@ -269,6 +298,7 @@ def main():
 			)
 
 			best_acc = 0.0
+			best_acc_phase1 = 0.0  # Phase 1 的最佳准确率（用于 Phase 1 早停）
 			no_improve_epochs = 0
 			epochs_ran = 0
 
@@ -287,9 +317,13 @@ def main():
 						phase = "freeze"
 						current_optimizer = optimizer_phase1
 					else:
-						# 在第一个 phase2 epoch 开始时解冻 backbone
+						# 在第一个 phase2 epoch 开始时解冻 backbone 并重置计数器
 						if epoch == freeze_backbone_epochs + 1:
 							model.unfreeze_backbone()
+							best_acc_phase1 = best_acc  # 记录 Phase 1 最佳
+							no_improve_epochs = 0       # 重置 early stopping 计数
+							print(f"Phase 2 开始，Phase 1 最佳 val_acc: {best_acc_phase1:.4f}")
+							print(f"Phase 2 patience: {patience_phase2}")
 						phase = "finetune"
 						current_optimizer = optimizer_phase2
 
@@ -310,9 +344,7 @@ def main():
 						torch.save(model.state_dict(), save_path)
 						no_improve_epochs = 0
 					else:
-						# 只在 phase2 (finetune) 才计算 early stopping
-						if phase == "finetune":
-							no_improve_epochs += 1
+						no_improve_epochs += 1
 
 					# 记录到逐 epoch CSV
 					epoch_writer.writerow({
@@ -326,15 +358,20 @@ def main():
 					})
 					ef.flush()
 
+					# 根据阶段选择 patience
+					if phase == "freeze":
+						current_patience = patience_phase1
+					else:
+						current_patience = patience_phase2
+
 					print("Epoch {}/{} [{}]".format(epoch, epochs, phase))
 					print("Train Loss: {:.4f}, Train Acc: {:.4f}".format(train_loss, train_acc))
 					print("Val   Loss: {:.4f}, Val   Acc: {:.4f}".format(val_loss, val_acc))
 					print("Best  Acc : {:.4f}".format(best_acc))
-					if phase == "finetune":
-						print("No improve epochs: {} / {}".format(no_improve_epochs, patience))
+					print("No improve epochs: {} / {}".format(no_improve_epochs, current_patience))
 					print("-" * 50)
 
-					if phase == "finetune" and no_improve_epochs >= patience:
+					if no_improve_epochs >= current_patience:
 						print("Validation accuracy did not improve. Early stopping.")
 						break
 

@@ -453,14 +453,16 @@ def greedy_select_channels_parallel(
     return selected_indices, nmi_curve, checkpoint_results
 
 
-def plot_nmi_curve(nmi_curve, checkpoints, save_path="./results/nmi_curve.png"):
+def plot_nmi_curve(nmi_curve, checkpoints, save_path="./results/nmi_curve.png",
+                   test_nmi_curve=None):
     """
-    画 NMI 随维数变化的曲线图。
+    画 NMI 随维数变化的曲线图（支持同时画验证集和测试集两条折线）。
     
     输入:
-        nmi_curve: 每一步的 NMI 值列表
+        nmi_curve: 验证集每一步的 NMI 值列表
         checkpoints: 要标记的维数列表
         save_path: 保存路径
+        test_nmi_curve: 测试集每一步的 NMI 值列表（可选）
     """
     import matplotlib.pyplot as plt
     import os
@@ -472,21 +474,32 @@ def plot_nmi_curve(nmi_curve, checkpoints, save_path="./results/nmi_curve.png"):
     
     # 画图
     x = list(range(1, len(nmi_curve) + 1))
-    y = nmi_curve
     
     plt.figure(figsize=(10, 6))
-    plt.plot(x, y, 'b-', linewidth=2, label='Greedy KMeans-NMI')
+    plt.plot(x, nmi_curve, color='skyblue', linestyle='-', linewidth=2, label='Val NMI')
     
-    # 标记 checkpoints
+    if test_nmi_curve is not None:
+        x_test = list(range(1, len(test_nmi_curve) + 1))
+        plt.plot(x_test, test_nmi_curve, color='orange', linestyle='-', linewidth=2, label='Test NMI')
+    
+    # 标记 checkpoints（标注验证集数值，如有测试集也标注）
     for cp in checkpoints:
         if cp <= len(nmi_curve):
             plt.axvline(x=cp, color='r', linestyle='--', alpha=0.5)
-            plt.scatter([cp], [nmi_curve[cp-1]], color='r', s=100, zorder=5)
+            plt.scatter([cp], [nmi_curve[cp-1]], color='skyblue', edgecolors='navy',
+                        s=100, zorder=5)
+            ann_text = f'k={cp}\nVal={nmi_curve[cp-1]:.4f}'
+            ann_y = nmi_curve[cp-1]
+            if test_nmi_curve is not None and cp <= len(test_nmi_curve):
+                plt.scatter([cp], [test_nmi_curve[cp-1]], color='orange', edgecolors='darkorange',
+                            s=100, zorder=5)
+                ann_text = f'k={cp}\nVal={nmi_curve[cp-1]:.4f}\nTest={test_nmi_curve[cp-1]:.4f}'
+                ann_y = max(nmi_curve[cp-1], test_nmi_curve[cp-1])
             plt.annotate(
-                f'k={cp}\nNMI={nmi_curve[cp-1]:.4f}',
-                xy=(cp, nmi_curve[cp-1]),
-                xytext=(cp+5, nmi_curve[cp-1]),
-                fontsize=9
+                ann_text,
+                xy=(cp, ann_y),
+                xytext=(cp+5, ann_y),
+                fontsize=8
             )
     
     plt.xlabel('Number of Selected Channels', fontsize=12)
@@ -542,6 +555,81 @@ def extract_and_reduce_features():
     print(f"Feature matrix shape:{X.shape}")
 
     return X,y   #将特征和标签返回出去 
+
+
+def extract_val_features():
+    """在验证集上提取特征，用于评估通道选择的泛化效果。"""
+    base_dir = "./dataset/ali"
+    val_dir = os.path.join(base_dir, "val")
+
+    _, val_transform = get_transforms()
+    val_dataset = datasets.ImageFolder(val_dir, transform=val_transform)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=2)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = build_model(num_classes=2)
+    model.load_state_dict(torch.load("./results/OriginalModel.pth", map_location=device))
+    model = model.to(device)
+    model.eval()
+
+    extractor = EfficientNetFeatureExtractor(model, pool=True, flatten=False)
+
+    all_features = []
+    all_labels = []
+
+    print("Extracting Val Features...")
+    with torch.no_grad():
+        for images, labels in tqdm(val_loader, desc="Val Feature Extraction"):
+            images = images.to(device)
+            feats = extractor(images)
+            feats = feats.view(feats.size(0), -1).cpu().numpy()
+            all_features.append(feats)
+            all_labels.append(labels.numpy())
+
+    X_val = np.concatenate(all_features, axis=0)
+    y_val = np.concatenate(all_labels, axis=0)
+    print(f"Val feature matrix shape: {X_val.shape}")
+
+    return X_val, y_val
+
+
+def extract_test_features():
+    """在测试集上提取特征，用于评估通道选择的泛化效果。"""
+    base_dir = "./dataset/ali"
+    test_dir = os.path.join(base_dir, "test")
+
+    _, val_transform = get_transforms()
+    test_dataset = datasets.ImageFolder(test_dir, transform=val_transform)
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = build_model(num_classes=2)
+    model.load_state_dict(torch.load("./results/OriginalModel.pth", map_location=device))
+    model = model.to(device)
+    model.eval()
+
+    extractor = EfficientNetFeatureExtractor(model, pool=True, flatten=False)
+
+    all_features = []
+    all_labels = []
+
+    print("Extracting Test Features...")
+    with torch.no_grad():
+        for images, labels in tqdm(test_loader, desc="Test Feature Extraction"):
+            images = images.to(device)
+            feats = extractor(images)
+            feats = feats.view(feats.size(0), -1).cpu().numpy()
+            all_features.append(feats)
+            all_labels.append(labels.numpy())
+
+    X_test = np.concatenate(all_features, axis=0)
+    y_test = np.concatenate(all_labels, axis=0)
+    print(f"Test feature matrix shape: {X_test.shape}")
+
+    return X_test, y_test
+
     
     # import scipy.stats
     
@@ -586,9 +674,11 @@ if __name__ == "__main__":
     N_WORKERS = None            # 并行进程数, None 表示用全部 CPU 核心
     
     # ========== 提取特征 ==========
-    features, labels = extract_and_reduce_features()
+    features, labels = extract_and_reduce_features()       # 训练集特征，用于通道选择
+    val_features, val_labels = extract_val_features()       # 验证集特征，用于评估
+    test_features, test_labels = extract_test_features()    # 测试集特征，用于评估
     
-    # ========== 通道选择 ==========
+    # ========== 通道选择（仍基于训练集特征） ==========
     if USE_GREEDY:
         # 贪心法：每一步选择能使子空间 NMI 最大的通道
         print("=" * 50)
@@ -622,16 +712,63 @@ if __name__ == "__main__":
                 checkpoints=CHECKPOINTS
             )
         
-        # 画 NMI 曲线图
+        # ===== 在验证集上重新计算 NMI 曲线（评估泛化能力） =====
+        print("")
+        print("在验证集上重新计算 NMI 曲线...")
+        n_clusters_val = int(np.unique(val_labels).size)
+        val_nmi_curve = []
+        for step in tqdm(range(1, len(selected_indices) + 1), desc="Val NMI Curve"):
+            subset_indices = selected_indices[:step]
+            val_subset = val_features[:, subset_indices]
+            nmi_val = compute_subspace_kmeans_nmi(val_subset, val_labels, n_clusters_val)
+            val_nmi_curve.append(nmi_val)
+
+        val_checkpoint_results = {}
+        for cp in CHECKPOINTS:
+            if cp <= len(val_nmi_curve):
+                val_checkpoint_results[cp] = val_nmi_curve[cp - 1]
+
+        # ===== 在测试集上计算 NMI 曲线 =====
+        print("")
+        print("在测试集上计算 NMI 曲线...")
+        n_clusters_test = int(np.unique(test_labels).size)
+        test_nmi_curve = []
+        for step in tqdm(range(1, len(selected_indices) + 1), desc="Test NMI Curve"):
+            subset_indices = selected_indices[:step]
+            test_subset = test_features[:, subset_indices]
+            nmi_test = compute_subspace_kmeans_nmi(test_subset, test_labels, n_clusters_test)
+            test_nmi_curve.append(nmi_test)
+
+        test_checkpoint_results = {}
+        for cp in CHECKPOINTS:
+            if cp <= len(test_nmi_curve):
+                test_checkpoint_results[cp] = test_nmi_curve[cp - 1]
+
+        # 画 NMI 曲线图（验证集 + 测试集双折线）
         plot_nmi_curve(
-            nmi_curve=nmi_curve,
+            nmi_curve=val_nmi_curve,
             checkpoints=CHECKPOINTS,
-            save_path="./results/nmi_curve.png"
+            save_path="./results/nmi_curve.png",
+            test_nmi_curve=test_nmi_curve,
         )
         
-        # 打印 checkpoint 结果
+        # 打印 checkpoint 结果（验证集）
         print("")
-        print("各维数下的 NMI:")
+        print("各维数下的 NMI（验证集）:")
+        for k in CHECKPOINTS:
+            if k in val_checkpoint_results:
+                print(f"  k={k}: NMI={val_checkpoint_results[k]:.6f}")
+
+        # 打印 checkpoint 结果（测试集）
+        print("")
+        print("各维数下的 NMI（测试集）:")
+        for k in CHECKPOINTS:
+            if k in test_checkpoint_results:
+                print(f"  k={k}: NMI={test_checkpoint_results[k]:.6f}")
+
+        # 同时打印训练集 NMI 供对比
+        print("")
+        print("各维数下的 NMI（训练集，仅供参考）:")
         for k in CHECKPOINTS:
             if k in checkpoint_results:
                 print(f"  k={k}: NMI={checkpoint_results[k]:.6f}")
@@ -639,8 +776,12 @@ if __name__ == "__main__":
         # 保存选择器
         selector_data = {
             'selected_indices': selected_indices,
-            'nmi_curve': nmi_curve,
-            'checkpoint_results': checkpoint_results,
+            'nmi_curve': val_nmi_curve,
+            'nmi_curve_test': test_nmi_curve,
+            'nmi_curve_train': nmi_curve,
+            'checkpoint_results': val_checkpoint_results,
+            'checkpoint_results_test': test_checkpoint_results,
+            'checkpoint_results_train': checkpoint_results,
             'max_k': MAX_K,
             'strategy': 'greedy_kmeans_nmi'
         }
@@ -671,10 +812,10 @@ if __name__ == "__main__":
         pickle.dump(selector_data, f)
     print(f"选择器保存到了 'nmi_channel_selector.pkl'")
     
-    # ========== 评估不同维数 ==========
+    # ========== 评估不同维数（在验证集上） ==========
     print("")
     print("=" * 50)
-    print("评估筛选效果")
+    print("评估筛选效果（验证集）")
     print("=" * 50)
     
     for k in CHECKPOINTS:
@@ -682,13 +823,13 @@ if __name__ == "__main__":
             continue
         
         indices_k = selected_indices[:k]
-        selected_features_k = features[:, indices_k]
+        selected_val_features_k = val_features[:, indices_k]
         
-        print(f"\n--- 评估 k={k} ---")
+        print(f"\n--- 评估 k={k}（验证集） ---")
         result = evaluate_channel_selection_nmi(
-            original_features=features,
-            selected_features=selected_features_k,
-            labels=labels,
+            original_features=val_features,
+            selected_features=selected_val_features_k,
+            labels=val_labels,
             n_clusters=None,
             visualize_tsne=(k == 128),  # 只在 k=128 时画 t-SNE
             tsne_out_dir="./results/t-sne",

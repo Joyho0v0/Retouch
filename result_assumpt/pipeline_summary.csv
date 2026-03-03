@@ -1,0 +1,7 @@
+step,detail,value
+data_split,part_a_count,978
+data_split,part_b_count,422
+phase1,best_val_acc,0.8875
+phase2,best_val_acc,0.88
+output,final_model,./result_assumpt/model_final_k32.pth
+output,selector,./result_assumpt/nmi_channel_selector.pkl

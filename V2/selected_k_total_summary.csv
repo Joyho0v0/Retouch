@@ -1,0 +1,9 @@
+k,test_acc_ali,test_acc_megvii,model_path,note
+-1,0.95,0.744408945686901,./results/OriginalModel.pth,
+32,0.945,0.7523961661341853,./result/model_selected_32.pth,
+64,0.94,0.7332268370607029,./result/model_selected_64.pth,
+128,0.945,0.7252396166134185,./result/model_selected_128.pth,
+256,0.945,0.7348242811501597,./result/model_selected_256.pth,
+32_V2,"0.8850 ",0.6310,./result_assumpt/model_final_k32.pth,二阶段训练数据集，数据量太小
+,,,,
+,,,,
