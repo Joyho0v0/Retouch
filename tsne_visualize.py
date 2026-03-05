@@ -205,11 +205,84 @@ def plot_tsne(Z, labels, title, save_path):
     plt.close()
 
 
+def save_tsne_comparison(
+    original_features,
+    selected_features,
+    labels,
+    out_dir="./results/t-sne",
+    random_state=42,
+    n_samples=3000,
+    perplexity=30.0,
+):
+    """
+    画两张 t-SNE 对比图：原始 1280 维特征 vs 选中通道特征，并排保存。
+
+    输入:
+        original_features: 原始特征矩阵 [N, 1280]
+        selected_features: 选中通道特征矩阵 [N, k]
+        labels: 标签数组 [N,]
+        out_dir: 输出目录
+        random_state: 随机种子
+        n_samples: 最多采样多少个样本（加速 t-SNE）
+        perplexity: t-SNE perplexity 参数
+    返回:
+        save_path: 保存的图片路径
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ensure_dir(out_dir)
+
+    k = selected_features.shape[1]
+
+    # 采样
+    orig_sub, labels_sub = subsample(original_features, labels, n_samples, random_state)
+    sel_sub, _ = subsample(selected_features, labels, n_samples, random_state)
+
+    # 分别跑 t-SNE
+    print(f"  t-SNE: 原始 {orig_sub.shape[1]}D 特征...")
+    Z_orig = run_tsne(orig_sub, random_state, perplexity)
+    print(f"  t-SNE: 选中 {sel_sub.shape[1]}D 特征...")
+    Z_sel = run_tsne(sel_sub, random_state, perplexity)
+
+    # 画并排对比图
+    classes = np.unique(labels_sub)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    for c in classes:
+        mask = labels_sub == c
+        axes[0].scatter(Z_orig[mask, 0], Z_orig[mask, 1], s=8, alpha=0.75, label=str(c))
+        axes[1].scatter(Z_sel[mask, 0], Z_sel[mask, 1], s=8, alpha=0.75, label=str(c))
+
+    axes[0].set_title(f"Original ({orig_sub.shape[1]}D)")
+    axes[0].set_xticks([])
+    axes[0].set_yticks([])
+    axes[0].legend(loc="best", frameon=False, markerscale=2)
+
+    axes[1].set_title(f"Selected ({k}D)")
+    axes[1].set_xticks([])
+    axes[1].set_yticks([])
+    axes[1].legend(loc="best", frameon=False, markerscale=2)
+
+    fig.suptitle(f"t-SNE Comparison: Original vs Selected k={k}", fontsize=13)
+    fig.tight_layout()
+
+    save_path = os.path.join(out_dir, f"tsne_comparison_k{k}.png")
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+
+    return save_path
+
+
 def main():
     project_dir = os.path.dirname(os.path.abspath(__file__))
 
-    selector_path = os.path.join(project_dir, "nmi_channel_selector.pkl")
-    summary_csv = os.path.join(project_dir, "result", "selected_k_train_summary.csv")
+    # selector_path = os.path.join(project_dir, "nmi_channel_selector.pkl")
+    # summary_csv = os.path.join(project_dir, "result", "selected_k_train_summary.csv")
+    # 随机选择的通道
+    selector_path = os.path.join(project_dir, "random_channel_selector.pkl")
+    summary_csv = os.path.join(project_dir, "result", "selected_k_random_train_summary.csv")
     out_dir = os.path.join(project_dir, "result", "tsne")
 
     batch_size = 16

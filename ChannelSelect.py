@@ -159,7 +159,7 @@ def compute_subspace_kmeans_nmi(features_subset, labels, n_clusters, random_stat
 def greedy_select_channels(
     features,
     labels,
-    max_k=256,
+    max_k=128,
     n_clusters=None,
     random_state=42,
     score_n_samples=3000,
@@ -330,7 +330,7 @@ def _eval_channel_worker(args):
 def greedy_select_channels_parallel(
     features,
     labels,
-    max_k=256,
+    max_k=64,
     n_clusters=None,
     random_state=42,
     score_n_samples=3000,
@@ -454,15 +454,22 @@ def greedy_select_channels_parallel(
 
 
 def plot_nmi_curve(nmi_curve, checkpoints, save_path="./results/nmi_curve.png",
-                   test_nmi_curve=None):
+                   test_nmi_curve=None, megvii_test_nmi_curve=None,
+                   original_nmi_val=None, original_nmi_test=None,
+                   original_nmi_megvii=None):
     """
-    画 NMI 随维数变化的曲线图（支持同时画验证集和测试集两条折线）。
+    画 NMI 随维数变化的曲线图（支持验证集、测试集、megvii跨域测试集三条折线）。
+    在 x=-1 处用菱形标记 OriginalModel（全 1280 通道）的 NMI 作为基线对比。
     
     输入:
-        nmi_curve: 验证集每一步的 NMI 值列表
+        nmi_curve: Ali 验证集每一步的 NMI 值列表（天蓝色）
         checkpoints: 要标记的维数列表
         save_path: 保存路径
-        test_nmi_curve: 测试集每一步的 NMI 值列表（可选）
+        test_nmi_curve: Ali 测试集每一步的 NMI 值列表（橙黄色，可选）
+        megvii_test_nmi_curve: Megvii 测试集每一步的 NMI 值列表（红色，可选）
+        original_nmi_val: OriginalModel 全 1280 通道在 Ali 验证集上的 NMI
+        original_nmi_test: OriginalModel 全 1280 通道在 Ali 测试集上的 NMI
+        original_nmi_megvii: OriginalModel 全 1280 通道在 Megvii 测试集上的 NMI
     """
     import matplotlib.pyplot as plt
     import os
@@ -475,31 +482,67 @@ def plot_nmi_curve(nmi_curve, checkpoints, save_path="./results/nmi_curve.png",
     # 画图
     x = list(range(1, len(nmi_curve) + 1))
     
-    plt.figure(figsize=(10, 6))
-    plt.plot(x, nmi_curve, color='skyblue', linestyle='-', linewidth=2, label='Val NMI')
+    plt.figure(figsize=(12, 6))
+    plt.plot(x, nmi_curve, color='skyblue', linestyle='-', linewidth=2, label='Ali Val NMI')
     
     if test_nmi_curve is not None:
         x_test = list(range(1, len(test_nmi_curve) + 1))
-        plt.plot(x_test, test_nmi_curve, color='orange', linestyle='-', linewidth=2, label='Test NMI')
+        plt.plot(x_test, test_nmi_curve, color='orange', linestyle='-', linewidth=2, label='Ali Test NMI')
     
-    # 标记 checkpoints（标注验证集数值，如有测试集也标注）
+    if megvii_test_nmi_curve is not None:
+        x_meg = list(range(1, len(megvii_test_nmi_curve) + 1))
+        plt.plot(x_meg, megvii_test_nmi_curve, color='tomato', linestyle='-', linewidth=2, label='Megvii Test NMI')
+    
+    # OriginalModel 全 1280 通道的 NMI，标注在 x=-1 处
+    if original_nmi_val is not None and original_nmi_test is not None:
+        plt.scatter([-1], [original_nmi_val], color='skyblue', edgecolors='navy',
+                    s=150, zorder=5, marker='D',
+                    label=f'OriginalModel Val NMI={original_nmi_val:.4f}')
+        plt.scatter([-1], [original_nmi_test], color='orange', edgecolors='darkorange',
+                    s=150, zorder=5, marker='D',
+                    label=f'OriginalModel Ali Test NMI={original_nmi_test:.4f}')
+        ann_text = f'k=1280\nVal={original_nmi_val:.4f}\nTest={original_nmi_test:.4f}'
+        ann_y = max(original_nmi_val, original_nmi_test)
+        if original_nmi_megvii is not None:
+            plt.scatter([-1], [original_nmi_megvii], color='tomato', edgecolors='darkred',
+                        s=150, zorder=5, marker='D',
+                        label=f'OriginalModel Megvii Test NMI={original_nmi_megvii:.4f}')
+            ann_text += f'\nMegvii={original_nmi_megvii:.4f}'
+            ann_y = max(ann_y, original_nmi_megvii)
+        plt.annotate(
+            ann_text,
+            xy=(-1, ann_y),
+            xytext=(10, ann_y),
+            fontsize=7, color='green',
+        )
+
+    # 标记 checkpoints
     for cp in checkpoints:
         if cp <= len(nmi_curve):
             plt.axvline(x=cp, color='r', linestyle='--', alpha=0.5)
+            # 各曲线在 checkpoint 处的散点
             plt.scatter([cp], [nmi_curve[cp-1]], color='skyblue', edgecolors='navy',
                         s=100, zorder=5)
             ann_text = f'k={cp}\nVal={nmi_curve[cp-1]:.4f}'
             ann_y = nmi_curve[cp-1]
+            
             if test_nmi_curve is not None and cp <= len(test_nmi_curve):
                 plt.scatter([cp], [test_nmi_curve[cp-1]], color='orange', edgecolors='darkorange',
                             s=100, zorder=5)
-                ann_text = f'k={cp}\nVal={nmi_curve[cp-1]:.4f}\nTest={test_nmi_curve[cp-1]:.4f}'
-                ann_y = max(nmi_curve[cp-1], test_nmi_curve[cp-1])
+                ann_text += f'\nTest={test_nmi_curve[cp-1]:.4f}'
+                ann_y = max(ann_y, test_nmi_curve[cp-1])
+            
+            if megvii_test_nmi_curve is not None and cp <= len(megvii_test_nmi_curve):
+                plt.scatter([cp], [megvii_test_nmi_curve[cp-1]], color='tomato', edgecolors='darkred',
+                            s=100, zorder=5)
+                ann_text += f'\nMegvii={megvii_test_nmi_curve[cp-1]:.4f}'
+                ann_y = max(ann_y, megvii_test_nmi_curve[cp-1])
+            
             plt.annotate(
                 ann_text,
                 xy=(cp, ann_y),
                 xytext=(cp+5, ann_y),
-                fontsize=8
+                fontsize=7
             )
     
     plt.xlabel('Number of Selected Channels', fontsize=12)
@@ -557,14 +600,11 @@ def extract_and_reduce_features():
     return X,y   #将特征和标签返回出去 
 
 
-def extract_val_features():
-    """在验证集上提取特征，用于评估通道选择的泛化效果。"""
-    base_dir = "./dataset/ali"
-    val_dir = os.path.join(base_dir, "val")
-
+def _extract_features(data_dir, desc="Features"):
+    """通用特征提取函数：加载 OriginalModel，在指定目录上提取 1280 维特征。"""
     _, val_transform = get_transforms()
-    val_dataset = datasets.ImageFolder(val_dir, transform=val_transform)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, num_workers=2)
+    dataset = datasets.ImageFolder(data_dir, transform=val_transform)
+    loader = DataLoader(dataset, batch_size=16, shuffle=False, num_workers=2)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -578,57 +618,34 @@ def extract_val_features():
     all_features = []
     all_labels = []
 
-    print("Extracting Val Features...")
+    print(f"Extracting {desc} Features...")
     with torch.no_grad():
-        for images, labels in tqdm(val_loader, desc="Val Feature Extraction"):
+        for images, labels in tqdm(loader, desc=f"{desc} Feature Extraction"):
             images = images.to(device)
             feats = extractor(images)
             feats = feats.view(feats.size(0), -1).cpu().numpy()
             all_features.append(feats)
             all_labels.append(labels.numpy())
 
-    X_val = np.concatenate(all_features, axis=0)
-    y_val = np.concatenate(all_labels, axis=0)
-    print(f"Val feature matrix shape: {X_val.shape}")
+    X = np.concatenate(all_features, axis=0)
+    y = np.concatenate(all_labels, axis=0)
+    print(f"{desc} feature matrix shape: {X.shape}")
+    return X, y
 
-    return X_val, y_val
+
+def extract_val_features():
+    """在 ali 验证集上提取特征。"""
+    return _extract_features("./dataset/ali/val", "Ali Val")
 
 
 def extract_test_features():
-    """在测试集上提取特征，用于评估通道选择的泛化效果。"""
-    base_dir = "./dataset/ali"
-    test_dir = os.path.join(base_dir, "test")
+    """在 ali 测试集上提取特征。"""
+    return _extract_features("./dataset/ali/test", "Ali Test")
 
-    _, val_transform = get_transforms()
-    test_dataset = datasets.ImageFolder(test_dir, transform=val_transform)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=2)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = build_model(num_classes=2)
-    model.load_state_dict(torch.load("./results/OriginalModel.pth", map_location=device))
-    model = model.to(device)
-    model.eval()
-
-    extractor = EfficientNetFeatureExtractor(model, pool=True, flatten=False)
-
-    all_features = []
-    all_labels = []
-
-    print("Extracting Test Features...")
-    with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Test Feature Extraction"):
-            images = images.to(device)
-            feats = extractor(images)
-            feats = feats.view(feats.size(0), -1).cpu().numpy()
-            all_features.append(feats)
-            all_labels.append(labels.numpy())
-
-    X_test = np.concatenate(all_features, axis=0)
-    y_test = np.concatenate(all_labels, axis=0)
-    print(f"Test feature matrix shape: {X_test.shape}")
-
-    return X_test, y_test
+def extract_megvii_test_features():
+    """在 megvii 测试集上提取特征（跨域评估）。"""
+    return _extract_features("./dataset/megvii/test", "Megvii Test")
 
     
     # import scipy.stats
@@ -666,19 +683,24 @@ if __name__ == "__main__":
     # labels：[B]
     
     # ========== 配置参数 ==========
-    MAX_K = 256                 # 最多选多少个通道
+    MAX_K = 64                  # 最多选多少个通道
     SCORE_N_SAMPLES = 3000      # 用于打分的采样数（加速）
-    CHECKPOINTS = [32, 64, 128, 256]  # 记录这些维数的 NMI
+    CHECKPOINTS = [32, 64, 128, 256]      # 记录这些维数的 NMI
     USE_GREEDY = True           # True: 贪心法, False: 逐通道打分法
     USE_PARALLEL = True         # True: 多进程并行, False: 单进程
-    N_WORKERS = None            # 并行进程数, None 表示用全部 CPU 核心
+    N_WORKERS = 20            # 并行进程数, None 表示用全部 CPU 核心
     
     # ========== 提取特征 ==========
-    features, labels = extract_and_reduce_features()       # 训练集特征，用于通道选择
-    val_features, val_labels = extract_val_features()       # 验证集特征，用于评估
-    test_features, test_labels = extract_test_features()    # 测试集特征，用于评估
+    # 注意：通道选择（模型选择）应在验证集上进行，而非训练集。
+    # 在训练集上做通道选择会导致过拟合：模型本身就是在训练集上训练的，
+    # 训练特征对训练样本的区分度极高，贪心选择 60~80 个通道后训练 NMI
+    # 就会饱和到 1.0，此后的选择退化为随机选取，毫无意义。
+    # 因此这里只提取验证集、测试集、Megvii 测试集的特征。
+    val_features, val_labels = extract_val_features()             # Ali 验证集特征，用于通道选择
+    test_features, test_labels = extract_test_features()          # Ali 测试集特征，用于评估
+    meg_features, meg_labels = extract_megvii_test_features()     # Megvii 测试集特征，跨域评估
     
-    # ========== 通道选择（仍基于训练集特征） ==========
+    # ========== 通道选择（基于验证集特征，避免训练集过拟合） ==========
     if USE_GREEDY:
         # 贪心法：每一步选择能使子空间 NMI 最大的通道
         print("=" * 50)
@@ -689,10 +711,10 @@ if __name__ == "__main__":
         print("=" * 50)
         
         if USE_PARALLEL:
-            # 多进程版本
+            # 多进程版本（在验证集上选择通道）
             selected_indices, nmi_curve, checkpoint_results = greedy_select_channels_parallel(
-                features=features,
-                labels=labels,
+                features=val_features,
+                labels=val_labels,
                 max_k=MAX_K,
                 n_clusters=None,
                 random_state=42,
@@ -701,10 +723,10 @@ if __name__ == "__main__":
                 n_workers=N_WORKERS
             )
         else:
-            # 单进程版本
+            # 单进程版本（在验证集上选择通道）
             selected_indices, nmi_curve, checkpoint_results = greedy_select_channels(
-                features=features,
-                labels=labels,
+                features=val_features,
+                labels=val_labels,
                 max_k=MAX_K,
                 n_clusters=None,
                 random_state=42,
@@ -712,28 +734,16 @@ if __name__ == "__main__":
                 checkpoints=CHECKPOINTS
             )
         
-        # ===== 在验证集上重新计算 NMI 曲线（评估泛化能力） =====
-        print("")
-        print("在验证集上重新计算 NMI 曲线...")
-        n_clusters_val = int(np.unique(val_labels).size)
-        val_nmi_curve = []
-        for step in tqdm(range(1, len(selected_indices) + 1), desc="Val NMI Curve"):
-            subset_indices = selected_indices[:step]
-            val_subset = val_features[:, subset_indices]
-            nmi_val = compute_subspace_kmeans_nmi(val_subset, val_labels, n_clusters_val)
-            val_nmi_curve.append(nmi_val)
+        # greedy 已在验证集上选择通道，返回的 nmi_curve 就是验证集 NMI 曲线
+        val_nmi_curve = nmi_curve
+        val_checkpoint_results = checkpoint_results
 
-        val_checkpoint_results = {}
-        for cp in CHECKPOINTS:
-            if cp <= len(val_nmi_curve):
-                val_checkpoint_results[cp] = val_nmi_curve[cp - 1]
-
-        # ===== 在测试集上计算 NMI 曲线 =====
+        # ===== 在 Ali 测试集上计算 NMI 曲线 =====
         print("")
-        print("在测试集上计算 NMI 曲线...")
+        print("在 Ali 测试集上计算 NMI 曲线...")
         n_clusters_test = int(np.unique(test_labels).size)
         test_nmi_curve = []
-        for step in tqdm(range(1, len(selected_indices) + 1), desc="Test NMI Curve"):
+        for step in tqdm(range(1, len(selected_indices) + 1), desc="Ali Test NMI Curve"):
             subset_indices = selected_indices[:step]
             test_subset = test_features[:, subset_indices]
             nmi_test = compute_subspace_kmeans_nmi(test_subset, test_labels, n_clusters_test)
@@ -744,12 +754,44 @@ if __name__ == "__main__":
             if cp <= len(test_nmi_curve):
                 test_checkpoint_results[cp] = test_nmi_curve[cp - 1]
 
-        # 画 NMI 曲线图（验证集 + 测试集双折线）
+        # ===== 在 Megvii 测试集上计算 NMI 曲线（跨域） =====
+        print("")
+        print("在 Megvii 测试集上计算 NMI 曲线（跨域评估）...")
+        n_clusters_meg = int(np.unique(meg_labels).size)
+        megvii_test_nmi_curve = []
+        for step in tqdm(range(1, len(selected_indices) + 1), desc="Megvii Test NMI Curve"):
+            subset_indices = selected_indices[:step]
+            meg_subset = meg_features[:, subset_indices]
+            nmi_meg = compute_subspace_kmeans_nmi(meg_subset, meg_labels, n_clusters_meg)
+            megvii_test_nmi_curve.append(nmi_meg)
+
+        megvii_checkpoint_results = {}
+        for cp in CHECKPOINTS:
+            if cp <= len(megvii_test_nmi_curve):
+                megvii_checkpoint_results[cp] = megvii_test_nmi_curve[cp - 1]
+
+        # 计算 OriginalModel 全 1280 通道的 NMI（基线对比）
+        print("")
+        print("计算 OriginalModel 全 1280 通道 NMI...")
+        n_clusters_val = int(np.unique(val_labels).size)
+        n_clusters_test = int(np.unique(test_labels).size)
+        n_clusters_meg = int(np.unique(meg_labels).size)
+        original_nmi_val = compute_subspace_kmeans_nmi(val_features, val_labels, n_clusters_val)
+        original_nmi_test = compute_subspace_kmeans_nmi(test_features, test_labels, n_clusters_test)
+        original_nmi_megvii = compute_subspace_kmeans_nmi(meg_features, meg_labels, n_clusters_meg)
+        print(f"  OriginalModel (1280ch) Val={original_nmi_val:.4f}, "
+              f"Test={original_nmi_test:.4f}, Megvii={original_nmi_megvii:.4f}")
+
+        # 画 NMI 曲线图（验证集 + Ali测试集 + Megvii测试集 三折线）
         plot_nmi_curve(
             nmi_curve=val_nmi_curve,
             checkpoints=CHECKPOINTS,
             save_path="./results/nmi_curve.png",
             test_nmi_curve=test_nmi_curve,
+            megvii_test_nmi_curve=megvii_test_nmi_curve,
+            original_nmi_val=original_nmi_val,
+            original_nmi_test=original_nmi_test,
+            original_nmi_megvii=original_nmi_megvii,
         )
         
         # 打印 checkpoint 结果（验证集）
@@ -759,29 +801,31 @@ if __name__ == "__main__":
             if k in val_checkpoint_results:
                 print(f"  k={k}: NMI={val_checkpoint_results[k]:.6f}")
 
-        # 打印 checkpoint 结果（测试集）
+        # 打印 checkpoint 结果（Ali 测试集）
         print("")
-        print("各维数下的 NMI（测试集）:")
+        print("各维数下的 NMI（Ali 测试集）:")
         for k in CHECKPOINTS:
             if k in test_checkpoint_results:
                 print(f"  k={k}: NMI={test_checkpoint_results[k]:.6f}")
 
-        # 同时打印训练集 NMI 供对比
+        # 打印 checkpoint 结果（Megvii 测试集）
         print("")
-        print("各维数下的 NMI（训练集，仅供参考）:")
+        print("各维数下的 NMI（Megvii 测试集，跨域）:")
         for k in CHECKPOINTS:
-            if k in checkpoint_results:
-                print(f"  k={k}: NMI={checkpoint_results[k]:.6f}")
+            if k in megvii_checkpoint_results:
+                print(f"  k={k}: NMI={megvii_checkpoint_results[k]:.6f}")
         
         # 保存选择器
         selector_data = {
             'selected_indices': selected_indices,
             'nmi_curve': val_nmi_curve,
             'nmi_curve_test': test_nmi_curve,
-            'nmi_curve_train': nmi_curve,
+            'nmi_curve_megvii_test': megvii_test_nmi_curve,
+            # 注意：nmi_curve 现在就是验证集曲线（不再有训练集曲线）
             'checkpoint_results': val_checkpoint_results,
             'checkpoint_results_test': test_checkpoint_results,
-            'checkpoint_results_train': checkpoint_results,
+            'checkpoint_results_megvii_test': megvii_checkpoint_results,
+
             'max_k': MAX_K,
             'strategy': 'greedy_kmeans_nmi'
         }
@@ -792,19 +836,19 @@ if __name__ == "__main__":
         print("使用逐通道打分法选择通道")
         print("=" * 50)
         
-        top_128_indices, all_nmi_scores = select_top_k_channels_by_kmeans_nmi(
-            features, labels, k=128, n_clusters=None, random_state=42
+        top_64_indices, all_nmi_scores = select_top_k_channels_by_kmeans_nmi(
+            val_features, val_labels, k=64, n_clusters=None, random_state=42
         )
         
-        selected_indices = list(top_128_indices)
+        selected_indices = list(top_64_indices)
         
         selector_data = {
             'selected_indices': selected_indices,
             'nmi_scores': all_nmi_scores,
             'n_clusters': None,
-            'n_bins': int(np.unique(labels).size),
+            'n_bins': int(np.unique(val_labels).size),
             'strategy': 'per_channel_kmeans',
-            'k': 128
+            'k': 64
         }
     
     # ========== 保存选择器 ==========
@@ -831,7 +875,7 @@ if __name__ == "__main__":
             selected_features=selected_val_features_k,
             labels=val_labels,
             n_clusters=None,
-            visualize_tsne=(k == 128),  # 只在 k=128 时画 t-SNE
+            visualize_tsne=(k in CHECKPOINTS),  # 仅在 checkpoint 维数上可视化 t-SNE
             tsne_out_dir="./results/t-sne",
         )
 

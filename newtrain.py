@@ -158,12 +158,12 @@ def main():
 	train_dir = os.path.join(base_dir, "train")
 	val_dir = os.path.join(base_dir, "val")
 
-	selector_path = "./nmi_channel_selector.pkl"
+	selector_path = "./random_channel_selector.pkl"
 	pretrained_path = "./results/OriginalModel.pth"  # 预训练模型权重
 
 	# 是否依次跑多个 k
 	RUN_MULTI_K = True
-	K_LIST = [32, 64, 128, 256]
+	K_LIST = [32, 64,128]
 	selected_k = 128  # RUN_MULTI_K=False 时使用
 	num_classes = 2
 
@@ -247,7 +247,7 @@ def main():
 		writer.writeheader()
 
 		for idx_k, k in enumerate(k_list, start=1):
-			save_path = os.path.join(save_dir, f"model_selected_{k}.pth")
+			save_path = os.path.join(save_dir, f"Random_model_selected_{k}.pth")
 			selected_indices = all_indices[:k]
 
 			# 每个 k 的逐 epoch 日志
